@@ -1,0 +1,43 @@
+### 1. Cadastrar o Neymar (Novo teste)
+POST http://localhost:3000/users
+Content-Type: application/json
+
+{
+  "name": "Admin",
+  "email": "g7luiz@gmail.com",
+  "password": "I4mG33s373n!@#"
+}
+
+###
+
+### 2. Fazer Login com o Neymar
+POST http://localhost:3000/login
+Content-Type: application/json
+
+{
+  "email": "neymar@teste.com",
+  "password": "senha_facil_123"
+}
+
+### 1. Fazer Login para pegar o Token
+# @name login
+POST http://localhost:3000/login
+Content-Type: application/json
+
+{
+  "email": "neymar@teste.com",
+  "password": "senha_facil_123"
+}
+
+### Copie o valor do "token" retornado acima e cole abaixo:
+
+### 2. Tentar enviar um palpite COM o Token
+POST http://localhost:3000/guesses
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6NCwibmFtZSI6Ik5leW1hciBTaWx2YSIsImVtYWlsIjoibmV5bWFyQHRlc3RlLmNvbSIsImlhdCI6MTc4MDk0Mzk3NSwiZXhwIjoxNzgxMDMwMzc1fQ.EwnklbSahEj-arM8tuUwZ7R1S8B-S2tp7M1-zSAnBhY
+Content-Type: application/json
+
+{
+  "match_id": 2,
+  "guess_a": 2,
+  "guess_b": 0
+}
