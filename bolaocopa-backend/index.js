@@ -85,7 +85,6 @@ app.post('/login', async (req, res) => {
 
     const position = positionCheck.rows[0]?.ranking_position || '-';
 
-    // Retorna os dados do usuário montados corretamente
     return res.json({
       user: {
         id: user.id,
@@ -122,7 +121,7 @@ app.get('/ranking', async (req, res) => {
    ROTAS DE TIMES E PARTIDAS (MATCHES)
    ========================================== */
 
-// Rota para listar todos os times cadastrados (Usado no Autocomplete do Admin)
+// Rota para listar todos os times cadastrados (Autocomplete)
 app.get('/teams', async (req, res) => {
   try {
     const allTeams = await pool.query('SELECT id, name FROM teams ORDER BY name ASC');
@@ -133,10 +132,10 @@ app.get('/teams', async (req, res) => {
   }
 });
 
-// CORRIGIDO: Rota para listar partidas trazendo palpites e pontos do usuário logado
+// Rota para listar partidas trazendo palpites e pontos do usuário logado
 app.get('/matches', authMiddleware, async (req, res) => {
   try {
-    const userId = req.userId; // Capturado com segurança do token decodificado pelo middleware
+    const userId = req.userId; 
 
     const queryText = `
       SELECT 
@@ -147,7 +146,9 @@ app.get('/matches', authMiddleware, async (req, res) => {
         t_b.flag_url AS team_b_flag, 
         g.guess_a,
         g.guess_b,
-        g.points_gained AS points_earned -- Converte o nome da coluna para o formato do Front-end
+        g.guess_penalties_a,
+        g.guess_penalties_b,
+        g.points_gained AS points_earned 
       FROM matches m
       JOIN teams t_a ON m.team_a_id = t_a.id
       JOIN teams t_b ON m.team_b_id = t_b.id
@@ -168,7 +169,7 @@ app.get('/matches', authMiddleware, async (req, res) => {
    ROTAS EXCLUSIVAS DO ADMINISTRADOR
    ========================================== */
 
-// Rota de criação de jogos
+// CORRIGIDO: Rota de criação de jogos (Agora salvando a coluna is_knockout corretamente)
 app.post('/matches', authMiddleware, async (req, res) => {
   try {
     const userCheck = await pool.query('SELECT is_admin FROM users WHERE id = $1', [req.userId]);
@@ -176,11 +177,11 @@ app.post('/matches', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Acesso negado.' });
     }
 
-    const { team_a_id, team_b_id, match_date } = req.body;
+    const { team_a_id, team_b_id, match_date, is_knockout } = req.body;
     
     const newMatch = await pool.query(
-      'INSERT INTO matches (team_a_id, team_b_id, match_date) VALUES ($1, $2, $3) RETURNING *',
-      [team_a_id, team_b_id, match_date]
+      'INSERT INTO matches (team_a_id, team_b_id, match_date, is_knockout) VALUES ($1, $2, $3, $4) RETURNING *',
+      [team_a_id, team_b_id, match_date, is_knockout || false]
     );
 
     return res.status(201).json(newMatch.rows[0]);
@@ -190,7 +191,7 @@ app.post('/matches', authMiddleware, async (req, res) => {
   }
 });
 
-// Rota para atualizar dados/placar de uma partida (Modo Admin)
+// Rota para atualizar dados básicos de uma partida
 app.put('/matches/:id', authMiddleware, async (req, res) => {
   try {
     const userCheck = await pool.query('SELECT is_admin FROM users WHERE id = $1', [req.userId]);
@@ -250,20 +251,24 @@ app.delete('/matches/:id', authMiddleware, async (req, res) => {
 // Rota para encerrar um jogo de vez e computar os pontos de todo mundo
 app.post('/matches/:id/finish', authMiddleware, async (req, res) => {
   const matchId = req.params.id;
-  const { goals_a, goals_b } = req.body;
+  const { goals_a, goals_b, penalties_a, penalties_b } = req.body;
 
   try {
     const userCheck = await pool.query('SELECT is_admin FROM users WHERE id = $1', [req.userId]);
     if (!userCheck.rows[0]?.is_admin) {
-      return res.status(403).json({ error: 'Acesso negado. Rota exclusiva para administradores.' });
+      return res.status(403).json({ error: 'Acesso negado.' });
     }
     
+    // Ajuste preventivo para tratar strings vazias vindas do front como nulas no banco
+    const pA = (penalties_a === '' || penalties_a === undefined) ? null : Number(penalties_a);
+    const pB = (penalties_b === '' || penalties_b === undefined) ? null : Number(penalties_b);
+
     const updateMatch = await pool.query(
       `UPDATE matches 
-       SET goals_a = $1, goals_b = $2, status = 'FINISHED' 
-       WHERE id = $3 
+       SET goals_a = $1, goals_b = $2, penalties_a = $3, penalties_b = $4, status = 'FINISHED' 
+       WHERE id = $5 
        RETURNING *`,
-      [goals_a, goals_b, matchId]
+      [Number(goals_a), Number(goals_b), pA, pB, matchId]
     );
 
     if (updateMatch.rows.length === 0) {
@@ -277,27 +282,36 @@ app.post('/matches/:id/finish', authMiddleware, async (req, res) => {
       const gA = guess.guess_a;
       const gB = guess.guess_b;
 
-      if (gA === goals_a && gB === goals_b) {
-        pointsGained = 25; // Placar exato
+      // 1. Lógica Padrão de Pontos (Tempo Regulamentar/Prorrogação)
+      if (gA === Number(goals_a) && gB === Number(goals_b)) {
+        pointsGained = 25; 
       } else if (
-        (gA > gB && goals_a > goals_b) || 
-        (gA < gB && goals_a < goals_b) || 
-        (gA === gB && goals_a === goals_b)
+        (gA > gB && Number(goals_a) > Number(goals_b)) || 
+        (gA < gB && Number(goals_a) < Number(goals_b)) || 
+        (gA === gB && Number(goals_a) === Number(goals_b))
       ) {
-        pointsGained = 10; // Acertou o vencedor/empate
+        pointsGained = 10; 
       }
 
-      // Salva os pontos na tabela de palpites (coluna points_gained)
-      await pool.query('UPDATE guesses SET points_gained = $1 WHERE id = $2', [pointsGained, guess.id]);
+      // 2. Lógica de Bônus de Pênaltis (Se o jogo real empatou no mata-mata)
+      if (Number(goals_a) === Number(goals_b) && updateMatch.rows[0].is_knockout) {
+        if (pA !== null && pB !== null && guess.guess_penalties_a !== null && guess.guess_penalties_b !== null) {
+          const realPenaltyWinner = pA > pB ? 'A' : 'B';
+          const userPenaltyWinner = guess.guess_penalties_a > guess.guess_penalties_b ? 'A' : 'B';
+          
+          if (realPenaltyWinner === userPenaltyWinner) {
+            pointsGained += 5; // +5 pontos bônus por acertar quem passou
+          }
+        }
+      }
 
-      // Acumula os pontos no perfil do usuário
+      await pool.query('UPDATE guesses SET points_gained = $1 WHERE id = $2', [pointsGained, guess.id]);
       await pool.query('UPDATE users SET total_points = total_points + $1 WHERE id = $2', [pointsGained, guess.user_id]);
     }
 
     return res.json({ 
-      message: 'Jogo encerrado e pontos computados com sucesso!', 
-      match: updateMatch.rows[0],
-      total_guesses_processed: guesses.rows.length
+      message: 'Jogo encerrado com cálculo de mata-mata concluído!', 
+      match: updateMatch.rows[0]
     });
 
   } catch (error) {
@@ -313,36 +327,41 @@ app.post('/matches/:id/finish', authMiddleware, async (req, res) => {
 
 // Rota de palpites protegida pelo middleware
 app.post('/guesses', authMiddleware, async (req, res) => {
-  const { match_id, guess_a, guess_b } = req.body;
+  const { match_id, guess_a, guess_b, guess_penalties_a, guess_penalties_b } = req.body;
   const user_id = req.userId; 
 
   try {
     const matchCheck = await pool.query('SELECT match_date FROM matches WHERE id = $1', [match_id]);
-    
-    if (matchCheck.rows.length === 0) {
-      return res.status(404).json({ error: 'Jogo não encontrado.' });
-    }
+    if (matchCheck.rows.length === 0) return res.status(404).json({ error: 'Jogo não encontrado.' });
 
-    const matchDate = new Date(matchCheck.rows[0].match_date);
-    const now = new Date();
-
-    if (now >= matchDate) {
+    if (new Date() >= new Date(matchCheck.rows[0].match_date)) {
       return res.status(400).json({ error: 'As apostas para este jogo já foram encerradas!' });
     }
 
     const queryText = `
-      INSERT INTO guesses (user_id, match_id, guess_a, guess_b) 
-      VALUES ($1, $2, $3, $4)
+      INSERT INTO guesses (user_id, match_id, guess_a, guess_b, guess_penalties_a, guess_penalties_b) 
+      VALUES ($1, $2, $3, $4, $5, $6)
       ON CONFLICT (user_id, match_id) 
-      DO UPDATE SET guess_a = EXCLUDED.guess_a, guess_b = EXCLUDED.guess_b
+      DO UPDATE SET 
+        guess_a = EXCLUDED.guess_a, 
+        guess_b = EXCLUDED.guess_b,
+        guess_penalties_a = EXCLUDED.guess_penalties_a,
+        guess_penalties_b = EXCLUDED.guess_penalties_b
       RETURNING *
     `;
 
-    const savedGuess = await pool.query(queryText, [user_id, match_id, guess_a, guess_b]);
+    const savedGuess = await pool.query(queryText, [
+      user_id, 
+      match_id, 
+      guess_a, 
+      guess_b, 
+      guess_penalties_a === '' ? null : guess_penalties_a, 
+      guess_penalties_b === '' ? null : guess_penalties_b
+    ]);
     return res.status(201).json(savedGuess.rows[0]);
   } catch (error) {
     console.error(error.message);
-    return res.status(500).json({ error: 'Erro ao salvar o palpite.' });
+    return res.status(500).json({ error: 'Erro ao salvar palpite.' });
   }
 });
 
